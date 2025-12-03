@@ -1,0 +1,177 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import MultinomialNB
+import matplotlib.pyplot as plt
+
+
+# 1 - LOADING THE DATA SET
+
+path = "adult.csv"
+df = pd.read_csv(path, skipinitialspace=True)
+
+
+# 2 - SELECTING THE FEATURES
+
+categorical_features = [
+    "workclass", "education", "marital.status", "occupation",
+    "relationship", "race", "sex", "native.country"
+]
+target_column = "income"
+
+# check if all columns are present
+for c in categorical_features + [target_column]:
+    if c not in df.columns:
+        raise ValueError(f"Column missing: {c}")
+
+df_categorial = df[categorical_features + [target_column]].copy()
+
+
+# 3 - CLEANING MISSING VALUES
+
+for f in categorical_features:
+    df_categorial[f] = df_categorial[f].fillna("Unkown").astype(str).str.strip()
+    df_categorial[f] = df_categorial[f].replace("?", "Unkown")
+
+
+# 4 - ENCODING FEATURES
+
+dictionary = {}
+X = pd.DataFrame()
+for f in categorical_features:
+    s = pd.Categorical(df_categorial[f])
+    mapping = {category: i for i, category in enumerate(s.categories)}
+    dictionary[f] = mapping
+    X[f] = s.codes.astype(int)
+
+Y = df_categorial[target_column].map({"<=50K": 0, ">50K": 1})
+
+
+# 5 - TRAIN/VALIDATION/TEST SPLIT
+
+X_temp, X_test, Y_temp, Y_test = train_test_split(
+    X, Y, test_size=0.15, stratify=Y, random_state=42
+)
+val_ratio = 0.15 / 0.85
+X_train, X_val, Y_train, Y_val = train_test_split(
+    X_temp, Y_temp, test_size=val_ratio, stratify=Y_temp, random_state=42
+)
+
+
+# 6 - NAIVE BAYES CLASS
+
+class NaiveBayesCategorical:
+    def __init__(self, alpha=1.0):
+        self.alpha = alpha
+        self.class_priors = {}
+        self.likelihoods = {}
+        self.classes = None
+
+    def fit(self, X, Y):
+        self.classes = np.unique(Y)
+        n_samples, n_features = X.shape
+        class_count = Y.value_counts()
+        n_classes = len(self.classes)
+
+        # calculate class priors with Laplace smoothing
+        self.class_priors = {
+            c: (class_count.get(c, 0) + self.alpha) / (n_samples + self.alpha * n_classes)
+            for c in self.classes
+        }
+
+        # calculate likelihoods for each feature given each class
+        for f in X.columns:
+            self.likelihoods[f] = {}
+            for c in self.classes:
+                X_c = X[Y == c]
+                value_counts = X_c[f].value_counts().to_dict()
+                n_values = len(X[f].unique())
+                self.likelihoods[f][c] = {
+                    k: (value_counts.get(k, 0) + self.alpha) / (len(X_c) + self.alpha * n_values)
+                    for k in X[f].unique()
+                }
+
+    def predict_proba(self, X):
+        proba = []
+        for _, row in X.iterrows():
+            class_probs = {}
+            for c in self.classes:
+                prob = self.class_priors[c]
+                for f in X.columns:
+                    prob *= self.likelihoods[f][c].get(
+                        row[f],
+                        self.alpha / (self.alpha * len(self.likelihoods[f][c]) + 1)
+                    )
+                class_probs[c] = prob
+            # normalize
+            total = sum(class_probs.values())
+            for k in class_probs:
+                class_probs[k] /= total
+            proba.append(class_probs)
+        return proba
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        predictions = [max(p, key=p.get) for p in proba]
+        return np.array(predictions)
+
+
+# 7 - FIT MODEL
+
+nb = NaiveBayesCategorical(alpha=1.0)
+nb.fit(X_train, Y_train)
+y_val_pred = nb.predict(X_val)
+accuracy = (y_val_pred == Y_val.values).mean()
+print("Validation Accuracy:", accuracy)
+
+
+# 8 -  ANALYSIS
+
+
+# 8.1 - Smoothing Parameter Test
+print("\n--- Smoothing Parameter (alpha) Test ---")
+alpha_values = [0.1, 0.5, 1.0, 2.0, 5.0]
+for a in alpha_values:
+    nb_a = NaiveBayesCategorical(alpha=a)
+    nb_a.fit(X_train, Y_train)
+    y_val_pred = nb_a.predict(X_val)
+    acc = (y_val_pred == Y_val.values).mean()
+    print(f"Alpha={a} -> Validation Accuracy: {acc:.4f}")
+
+# 8.2 - Feature Selection
+print("\n--- Feature Selection Analysis ---")
+feature_subsets = [
+    ["education", "occupation"],
+    ["workclass", "education", "marital.status"],
+    categorical_features
+]
+for subset in feature_subsets:
+    nb_feat = NaiveBayesCategorical(alpha=1.0)
+    nb_feat.fit(X_train[subset], Y_train)
+    y_val_pred = nb_feat.predict(X_val[subset])
+    acc = (y_val_pred == Y_val.values).mean()
+    print(f"Features={subset} -> Validation Accuracy: {acc:.4f}")
+
+# 8.3 - Probability Analysis
+print("\n--- Probability Distribution Example ---")
+proba_val = nb.predict_proba(X_val)
+proba_array = np.array([[p[0], p[1]] for p in proba_val])
+print("Example predicted probabilities for first 5 samples:")
+print(proba_array[:5])
+plt.hist(proba_array[:, 1], bins=20)
+plt.xlabel("Predicted probability for >50K")
+plt.ylabel("Count")
+plt.title("Probability Distribution")
+plt.show()
+
+# 8.4 - Independence Assumption
+print("\n--- Independence Assumption ---")
+print("Naive Bayes assumes features are independent given the class. In reality, features like education and occupation are correlated, which may make probabilities slightly biased.")
+
+# 8.5 - Compare with sklearn's MultinomialNB
+print("\n--- Sklearn MultinomialNB Comparison ---")
+mnb = MultinomialNB(alpha=1.0)
+mnb.fit(X_train, Y_train)
+y_val_pred_skl = mnb.predict(X_val)
+acc_skl = (y_val_pred_skl == Y_val.values).mean()
+print("Sklearn MultinomialNB Validation Accuracy:", acc_skl)
