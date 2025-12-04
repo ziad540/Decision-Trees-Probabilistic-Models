@@ -51,7 +51,7 @@ class DecisionTree:
         
         if best_feature is None:
             leaf_value = self._most_common_label(y)
-            print(f"No valid split found at depth {depth}. Creating leaf with value: {leaf_value}")
+            # print(f"No valid split found at depth {depth}. Creating leaf with value: {leaf_value}")
             return Node(value=leaf_value)
             
         # Update feature importance
